@@ -1,10 +1,9 @@
 # roil-drawing
 
-Codex skill for generating and editing images through Nano Banana Studio.
+Codex skill for generating, editing, and redrawing images with Roil Drawing.
 
-This skill uses the Nano Banana Studio CLI (`./nbs`) as its execution layer. The
-reference files are prompt-crafting aids only; they do not contain API keys,
-account credentials, or direct upstream request code.
+Roil Drawing is the standalone distribution target. Historical project CLIs are
+not required by this skill.
 
 ## Contents
 
@@ -18,4 +17,4 @@ account credentials, or direct upstream request code.
 
 Install or copy this directory into your Codex skills folder, then invoke
 `roil-drawing` for drawing, image editing, prompt optimization, or reference
-image redraw tasks.
+image redraw tasks through Roil-native drawing capability.
