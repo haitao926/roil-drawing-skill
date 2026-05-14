@@ -1,4 +1,4 @@
 interface:
   display_name: "Roil Drawing"
-  short_description: "Generate, edit, and redraw images with Roil Drawing."
-  default_prompt: "Use $roil-drawing to optimize prompts and generate or edit images through Roil-native drawing capability."
+  short_description: "帮老师直接出图、改图、按参考图重画，不用区分内部链路。"
+  default_prompt: "请用 $roil-drawing 帮我生成一张适合教学使用的图片。"
