@@ -14,6 +14,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -269,15 +270,43 @@ def _run_nbs_generate(prompt: str, out: Path, status: dict, *, model: str, size:
     ]
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             env=env,
-            timeout=DEFAULT_NBS_TIMEOUT,
-            check=False,
+            start_new_session=True,
         )
+    except Exception as exc:
+        if auth_cleanup_path:
+            Path(auth_cleanup_path).unlink(missing_ok=True)
+        return _result_payload(
+            success=False,
+            status="nbs_cli_launch_failed",
+            via=via,
+            model=model,
+            output_path=None,
+            message=str(exc),
+            error_type=exc.__class__.__name__,
+            error=str(exc),
+        )
+
+    try:
+        stdout, stderr = process.communicate(timeout=DEFAULT_NBS_TIMEOUT)
+        returncode = process.returncode
     except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        except ProcessLookupError:
+            pass
         return _result_payload(
             success=False,
             status="nbs_cli_timeout",
@@ -291,7 +320,7 @@ def _run_nbs_generate(prompt: str, out: Path, status: dict, *, model: str, size:
         if auth_cleanup_path:
             Path(auth_cleanup_path).unlink(missing_ok=True)
 
-    payload = _parse_json(completed.stdout)
+    payload = _parse_json(stdout)
     if payload is None:
         payload = _result_payload(
             success=False,
@@ -300,22 +329,22 @@ def _run_nbs_generate(prompt: str, out: Path, status: dict, *, model: str, size:
             model=model,
             output_path=None,
             message="NBS CLI returned non-JSON output.",
-            stdout=completed.stdout.strip()[:1000],
-            stderr=completed.stderr.strip()[:1000],
+            stdout=stdout.strip()[:1000],
+            stderr=stderr.strip()[:1000],
         )
 
-    payload.setdefault("success", completed.returncode == 0)
-    payload.setdefault("status", "generated" if completed.returncode == 0 else "nbs_cli_error")
+    payload.setdefault("success", returncode == 0)
+    payload.setdefault("status", "generated" if returncode == 0 else "nbs_cli_error")
     payload.setdefault("via", via)
     payload.setdefault("runner", RUNNER_NAME)
     payload.setdefault("model", payload.get("actual_model") or payload.get("model") or model)
-    payload.setdefault("output_path", payload.get("output_path") or str(out) if completed.returncode == 0 else None)
-    if completed.returncode == 0:
+    payload.setdefault("output_path", payload.get("output_path") or str(out) if returncode == 0 else None)
+    if returncode == 0:
         payload.setdefault("message", f"Image generated via {via}.")
     else:
         payload["success"] = False
         payload.setdefault("status", "nbs_cli_error")
-        payload.setdefault("message", payload.get("error") or completed.stderr.strip() or completed.stdout.strip() or "NBS CLI generation failed.")
+        payload.setdefault("message", payload.get("error") or stderr.strip() or stdout.strip() or "NBS CLI generation failed.")
     return payload
 
 

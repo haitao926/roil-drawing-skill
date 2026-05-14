@@ -17,6 +17,9 @@ from urllib import error, request
 DEFAULT_PLATFORM_URL = "https://image.roil.top/"
 DEFAULT_LAN_BASE_URL = "http://10.15.46.72:8002"
 DEFAULT_AUTH_PATH = Path.home() / ".nbs" / "auth.json"
+DEFAULT_NBS_CLI_PATHS = (
+    Path.home() / "Documents" / "GitHub" / "nano-banana-studio" / "nbs",
+)
 KEY_NAMES = ("ROIL_API_KEY", "OPENAI_API_KEY", "IMAGE_API_KEY")
 DEFAULT_PROBE_TIMEOUT = 8.0
 PROBE_HEADERS = {
@@ -66,6 +69,8 @@ def detect_nbs_cli() -> dict:
     if explicit:
         candidates.append((Path(explicit).expanduser(), "env"))
     candidates.append((Path.cwd() / "nbs", "cwd"))
+    for candidate in DEFAULT_NBS_CLI_PATHS:
+        candidates.append((candidate, "default_path"))
 
     # Roil Drawing is often invoked from a sibling project such as xedu-client,
     # while the executable NBS CLI lives in ../nano-banana-studio/nbs.
