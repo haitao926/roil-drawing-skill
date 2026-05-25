@@ -17,9 +17,6 @@ from urllib import error, request
 DEFAULT_PLATFORM_URL = "https://image.roil.top/"
 DEFAULT_LAN_BASE_URL = "http://10.15.46.72:8002"
 DEFAULT_AUTH_PATH = Path.home() / ".nbs" / "auth.json"
-DEFAULT_NBS_CLI_PATHS = (
-    Path.home() / "Documents" / "GitHub" / "nano-banana-studio" / "nbs",
-)
 KEY_NAMES = ("ROIL_API_KEY", "OPENAI_API_KEY", "IMAGE_API_KEY")
 DEFAULT_PROBE_TIMEOUT = 8.0
 PROBE_HEADERS = {
@@ -69,8 +66,6 @@ def detect_nbs_cli() -> dict:
     if explicit:
         candidates.append((Path(explicit).expanduser(), "env"))
     candidates.append((Path.cwd() / "nbs", "cwd"))
-    for candidate in DEFAULT_NBS_CLI_PATHS:
-        candidates.append((candidate, "default_path"))
 
     # Roil Drawing is often invoked from a sibling project such as xedu-client,
     # while the executable NBS CLI lives in ../nano-banana-studio/nbs.
@@ -94,10 +89,15 @@ def build_decision_summary(recommended_next_step: str) -> dict:
             "category": "cli_backend_ready",
             "reason": "Authenticated NBS session and local CLI are both available.",
         }
+    if recommended_next_step == "generate_via_platform_backend":
+        return {
+            "category": "platform_backend_ready",
+            "reason": "Authenticated Roil session is available; local NBS CLI is not required.",
+        }
     if recommended_next_step == "sync_cli_from_browser":
         return {
             "category": "cli_browser_sync_available",
-            "reason": "The local CLI session is stale, but the Roil platform can mint a fresh CLI session from the logged-in browser.",
+            "reason": "The local Roil session is missing or stale, but the Roil platform can mint a fresh local session from the logged-in browser.",
         }
     if recommended_next_step == "try_nbs_cli_direct":
         return {
@@ -115,18 +115,22 @@ def build_decision_summary(recommended_next_step: str) -> dict:
     }
 
 
-def build_recommended_commands(platform_url: str = DEFAULT_PLATFORM_URL) -> dict:
+def build_recommended_commands(platform_url: str = DEFAULT_PLATFORM_URL, nbs_cli: dict | None = None) -> dict:
     script_dir = Path(__file__).resolve().parent
     preflight_script = script_dir / "roil_preflight.py"
     draw_script = script_dir / "roil_draw.py"
     sync_base_url = normalize_base_url(platform_url) or normalize_base_url(DEFAULT_PLATFORM_URL)
+    if nbs_cli and nbs_cli.get("available"):
+        sync_web = f"{nbs_cli.get('path') or 'nbs'} auth sync-web --base-url {sync_base_url}"
+    else:
+        sync_web = f'python3 {draw_script} --prompt "..." --open-platform --json'
     return {
         "draw": (
             f'python3 {draw_script} --prompt "..." '
-            '--out output/roil-drawing/roil-drawing.png --json'
+            '--out output/roil-drawing/roil-drawing.png --open-platform --json'
         ),
         "preflight": f"python3 {preflight_script} --json",
-        "sync_web": f"nbs auth sync-web --base-url {sync_base_url}",
+        "sync_web": sync_web,
     }
 
 
@@ -505,8 +509,6 @@ def _should_offer_cli_sync(nbs_auth: dict, platform_probe: dict) -> bool:
         return False
     if platform_probe.get("reachable") is False:
         return False
-    if not (nbs_auth.get("auth_file_present") or nbs_auth.get("access_token_present")):
-        return False
     return True
 
 
@@ -619,6 +621,13 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
             "error": None,
         }
 
+    script_dir = Path(__file__).resolve().parent
+    draw_script = script_dir / "roil_draw.py"
+    if nbs_cli["available"]:
+        sync_command = f"{nbs_cli.get('path') or 'nbs'} auth sync-web --base-url {normalize_base_url(platform_url)}"
+    else:
+        sync_command = f'python3 {draw_script} --prompt "..." --open-platform --json'
+
     sync_web = {
         "attempted": False,
         "available": False,
@@ -629,16 +638,18 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
         "user_code": None,
         "expires_in": None,
         "interval": None,
-        "command": f"{nbs_cli.get('path') or 'nbs'} auth sync-web --base-url {normalize_base_url(platform_url)}",
+        "command": sync_command,
         "error": None,
     }
-    if nbs_cli["available"] and _should_offer_cli_sync(nbs_auth, platform_probe):
+    if _should_offer_cli_sync(nbs_auth, platform_probe):
         sync_web.update(_start_cli_sync(platform_url, timeout))
     nbs_auth["sync_web"] = sync_web
 
     if nbs_auth["session_available"] and nbs_cli["available"]:
         recommended_next_step = "generate_via_nbs_cli_backend"
-    elif nbs_cli["available"] and nbs_auth.get("sync_web", {}).get("success"):
+    elif nbs_auth["session_available"]:
+        recommended_next_step = "generate_via_platform_backend"
+    elif nbs_auth.get("sync_web", {}).get("success"):
         recommended_next_step = "sync_cli_from_browser"
     elif _should_prefer_platform_login(nbs_auth, platform_probe, lan_base_url):
         recommended_next_step = "open_or_login_platform"
@@ -649,9 +660,10 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
     else:
         recommended_next_step = "check_network_or_open_platform_manually"
     decision_summary = build_decision_summary(recommended_next_step)
-    recommended_commands = build_recommended_commands(platform_url)
+    recommended_commands = build_recommended_commands(platform_url, nbs_cli)
     availability_tier = {
         "generate_via_nbs_cli_backend": "native_cli_backend",
+        "generate_via_platform_backend": "platform_backend",
         "sync_cli_from_browser": "needs_cli_sync",
         "try_nbs_cli_direct": "native_cli_direct",
         "open_or_login_platform": "web_handoff",
@@ -679,7 +691,7 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
             "login_url": platform_url,
             "login_prompt": f"请先登录 Roil 平台：{platform_url}",
             "cli_sync_prompt": (
-                "浏览器登录态已可用于恢复 CLI：打开授权链接确认后，重新运行绘图命令。"
+                "打开授权链接确认后，Roil Drawing 会把浏览器登录态同步成本地会话；不需要安装 nbs。"
             ),
             "no_cli_note": "没有本地 CLI 不等于没有 Roil 出图入口；Roil Web 平台就是有效入口。",
             "fallback_note": (
@@ -693,7 +705,7 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
             ],
             "must_not_do": [
                 "Do not inspect ~/.nbs/auth.json, environment variables, backend source, or alternate image entrypoints before running preflight.",
-                "Do not claim there is no Roil drawing entrypoint when `recommended_next_step` points to a native CLI path.",
+                "Do not claim there is no Roil drawing entrypoint when `recommended_next_step` points to a native CLI or platform backend path.",
                 "Do not ask the user for OPENAI_API_KEY before native CLI and platform handoff paths are exhausted.",
             ],
         },

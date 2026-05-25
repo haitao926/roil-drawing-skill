@@ -11,8 +11,9 @@ Roil Drawing 的默认目标很简单：直接给图。不要先做长篇分析�
 
 1. 直接运行 `roil_draw.py`。
 2. 成功就返回图片输出路径。
-3. 如果返回 `needs_platform_login`，只给登录链接：`https://image.roil.top/`
-4. 只有用户明确要求排查时，才单独运行 `roil_preflight.py`
+3. 如果返回 `needs_cli_sync`，让用户打开返回的授权链接；不要让用户安装 `nbs`。
+4. 如果返回 `needs_platform_login`，只给登录链接：`https://image.roil.top/`
+5. 只有用户明确要求排查时，才单独运行 `roil_preflight.py`
 
 默认执行入口：
 
@@ -20,6 +21,7 @@ Roil Drawing 的默认目标很简单：直接给图。不要先做长篇分析�
 python3 .codex/skills/roil-drawing/scripts/roil_draw.py \
   --prompt "..." \
   --out output/roil-drawing/roil-drawing.png \
+  --open-platform \
   --json
 ```
 
@@ -33,6 +35,7 @@ python3 .agents/skills/roil-drawing/scripts/roil_draw.py --prompt "..." --json
 
 - 用户要图时，先生成，不先贴预检摘要。
 - 不要先读 `~/.nbs/auth.json`、环境变量、`backend/` 或模型配置来“找入口”。
+- 不要因为缺少根目录 `nbs` 文件就让用户安装 `nbs`；skill 已经能用 Roil 平台后端直接出图。
 - 不要主动尝试 `OPENAI_API_KEY` 或其他 key fallback。
 - 需要登录时，只说“请先登录”并给链接，不展开认证细节。
 - 只有脚本失败且错误信息不足时，才继续诊断。
