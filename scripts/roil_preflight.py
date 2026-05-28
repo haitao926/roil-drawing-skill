@@ -11,12 +11,14 @@ import shutil
 import ssl
 import subprocess
 import sys
+import time
 from urllib import error, request
 
 
 DEFAULT_PLATFORM_URL = "https://image.roil.top/"
 DEFAULT_LAN_BASE_URL = "http://10.15.46.72:8002"
 DEFAULT_AUTH_PATH = Path.home() / ".nbs" / "auth.json"
+PENDING_SYNC_FILENAME = "cli_sync_pending.json"
 KEY_NAMES = ("ROIL_API_KEY", "OPENAI_API_KEY", "IMAGE_API_KEY")
 DEFAULT_PROBE_TIMEOUT = 8.0
 PROBE_HEADERS = {
@@ -44,6 +46,10 @@ def auth_file_path() -> Path:
     return DEFAULT_AUTH_PATH
 
 
+def pending_sync_path() -> Path:
+    return auth_file_path().parent / PENDING_SYNC_FILENAME
+
+
 def load_auth_session() -> tuple[dict, Path]:
     path = auth_file_path()
     if not path.exists():
@@ -58,6 +64,70 @@ def load_auth_session() -> tuple[dict, Path]:
 def save_auth_session(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def clear_pending_cli_sync() -> None:
+    pending_sync_path().unlink(missing_ok=True)
+
+
+def save_pending_cli_sync(sync_info: dict) -> None:
+    device_code = str(sync_info.get("device_code") or "").strip()
+    if not device_code:
+        return
+    expires_in = max(1, int(sync_info.get("expires_in") or 600))
+    payload = {
+        "base_url": normalize_base_url(sync_info.get("base_url")),
+        "device_code": device_code,
+        "verification_uri": sync_info.get("verification_uri"),
+        "verification_uri_complete": sync_info.get("verification_uri_complete"),
+        "user_code": sync_info.get("user_code"),
+        "expires_in": expires_in,
+        "interval": max(1, int(sync_info.get("interval") or 2)),
+        "expires_at": time.time() + expires_in,
+    }
+    path = pending_sync_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_pending_cli_sync(platform_url: str) -> dict | None:
+    path = pending_sync_path()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        clear_pending_cli_sync()
+        return None
+    if not isinstance(payload, dict) or not str(payload.get("device_code") or "").strip():
+        clear_pending_cli_sync()
+        return None
+    if float(payload.get("expires_at") or 0) <= time.time():
+        clear_pending_cli_sync()
+        return None
+
+    base_url = normalize_base_url(payload.get("base_url") or platform_url)
+    expected_base_url = normalize_base_url(platform_url)
+    if base_url and expected_base_url and base_url != expected_base_url:
+        clear_pending_cli_sync()
+        return None
+    remaining = max(1, int(float(payload.get("expires_at") or time.time()) - time.time()))
+    return {
+        "attempted": False,
+        "available": True,
+        "success": True,
+        "base_url": base_url,
+        "status_code": None,
+        "device_code": payload.get("device_code"),
+        "verification_uri": payload.get("verification_uri"),
+        "verification_uri_complete": payload.get("verification_uri_complete"),
+        "user_code": payload.get("user_code"),
+        "expires_in": remaining,
+        "interval": max(1, int(payload.get("interval") or 2)),
+        "pending_reused": True,
+        "pending_path": str(path),
+        "error": None,
+    }
 
 
 def detect_nbs_cli() -> dict:
@@ -452,6 +522,7 @@ def _start_cli_sync(platform_url: str, timeout: float) -> dict:
         "success": False,
         "base_url": base_url,
         "status_code": None,
+        "device_code": None,
         "verification_uri": None,
         "verification_uri_complete": None,
         "user_code": None,
@@ -633,6 +704,7 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
         "available": False,
         "success": False,
         "base_url": normalize_base_url(platform_url),
+        "device_code": None,
         "verification_uri": None,
         "verification_uri_complete": None,
         "user_code": None,
@@ -642,7 +714,12 @@ def build_status(*, check_platform: bool = True, timeout: float = DEFAULT_PROBE_
         "error": None,
     }
     if _should_offer_cli_sync(nbs_auth, platform_probe):
-        sync_web.update(_start_cli_sync(platform_url, timeout))
+        pending_sync = load_pending_cli_sync(platform_url)
+        sync_web.update(pending_sync or _start_cli_sync(platform_url, timeout))
+        if sync_web.get("success") and sync_web.get("device_code"):
+            save_pending_cli_sync(sync_web)
+    if nbs_auth.get("session_available"):
+        clear_pending_cli_sync()
     nbs_auth["sync_web"] = sync_web
 
     if nbs_auth["session_available"] and nbs_cli["available"]:

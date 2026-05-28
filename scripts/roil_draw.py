@@ -21,7 +21,14 @@ import time
 from urllib import error, parse, request
 import webbrowser
 
-from roil_preflight import build_status, load_auth_session, normalize_base_url, save_auth_session
+from roil_preflight import (
+    build_status,
+    clear_pending_cli_sync,
+    load_auth_session,
+    normalize_base_url,
+    save_auth_session,
+    save_pending_cli_sync,
+)
 
 
 DEFAULT_MODEL = "gpt-image-2-all"
@@ -152,18 +159,25 @@ def _prepare_cli_sync(
     prompt_path.write_text(prompt.strip() + "\n", encoding="utf-8")
     sync_info = (status.get("nbs_auth") or {}).get("sync_web") or {}
     verification_url = str(sync_info.get("verification_uri_complete") or sync_info.get("verification_uri") or "").strip()
-    opened_platform = False
+    device_code = str(sync_info.get("device_code") or "").strip()
+    if device_code:
+        save_pending_cli_sync(sync_info)
+    open_error = None
     if open_platform and verification_url:
-        opened_platform = _maybe_open_platform(verification_url)
+        try:
+            _maybe_open_platform(verification_url)
+        except Exception as exc:
+            open_error = str(exc)
 
-    if opened_platform and sync_info.get("device_code"):
+    if device_code:
         try:
             session = _poll_cli_sync(
                 str(sync_info.get("base_url") or status.get("platform_url") or ""),
-                str(sync_info.get("device_code") or ""),
+                device_code,
                 timeout_seconds=sync_timeout,
                 interval_seconds=int(sync_info.get("interval") or 2),
             )
+            clear_pending_cli_sync()
             next_status = dict(status)
             next_auth = dict(status.get("nbs_auth") or {})
             next_auth.update(
@@ -182,6 +196,8 @@ def _prepare_cli_sync(
         except Exception as exc:
             sync_info = dict(sync_info)
             sync_info["poll_error"] = str(exc)
+            if "expired" in str(exc).lower():
+                clear_pending_cli_sync()
 
     payload = _result_payload(
         success=False,
@@ -196,6 +212,7 @@ def _prepare_cli_sync(
         user_code=sync_info.get("user_code"),
         expires_in=sync_info.get("expires_in"),
         sync_command=sync_info.get("command"),
+        sync_open_error=open_error,
         sync_poll_error=sync_info.get("poll_error"),
         prompt_path=str(prompt_path),
     )
