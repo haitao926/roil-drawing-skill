@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib import error, request
+from urllib import error, parse, request
 import webbrowser
 
 from roil_preflight import build_status, load_auth_session, normalize_base_url, save_auth_session
@@ -42,7 +42,30 @@ PLATFORM_HEADERS = {
 
 
 def _write_json(data: dict) -> None:
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    output = getattr(sys.stdout, "buffer", None)
+    if output is not None:
+        output.write(text.encode("utf-8") + b"\n")
+        output.flush()
+        return
+    print(json.dumps(data, ensure_ascii=True, indent=2))
+
+
+def _json_bytes(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _quote_url(url: str) -> str:
+    parts = parse.urlsplit(url)
+    return parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc.encode("idna").decode("ascii") if parts.netloc else "",
+            parse.quote(parts.path, safe="/%:@"),
+            parse.quote_plus(parts.query, safe="=&%:@/"),
+            parse.quote(parts.fragment, safe="%:@/?"),
+        )
+    )
 
 
 def _maybe_open_platform(platform_url: str) -> bool:
@@ -264,9 +287,9 @@ def _request_json(
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
     if json_body is not None:
-        headers["Content-Type"] = "application/json"
-        data = json.dumps(json_body).encode("utf-8")
-    req = request.Request(url, headers=headers, data=data, method="POST" if json_body is not None else "GET")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        data = _json_bytes(json_body)
+    req = request.Request(_quote_url(url), headers=headers, data=data, method="POST" if json_body is not None else "GET")
     try:
         with request.urlopen(req, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
@@ -284,11 +307,11 @@ def _request_json(
 
 def _post_json_status(base_url: str, path: str, json_body: dict, *, timeout: int = 60) -> tuple[int, dict]:
     url = f"{normalize_base_url(base_url)}{path}"
-    headers = {**PLATFORM_HEADERS, "Content-Type": "application/json"}
+    headers = {**PLATFORM_HEADERS, "Content-Type": "application/json; charset=utf-8"}
     req = request.Request(
-        url,
+        _quote_url(url),
         headers=headers,
-        data=json.dumps(json_body).encode("utf-8"),
+        data=_json_bytes(json_body),
         method="POST",
     )
     try:
@@ -378,7 +401,7 @@ def _download_platform_file(base_url: str, source_url: str, out: Path) -> None:
         url = source
     else:
         url = f"{normalize_base_url(base_url)}/{source.lstrip('/')}"
-    req = request.Request(url, headers=PLATFORM_HEADERS, method="GET")
+    req = request.Request(_quote_url(url), headers=PLATFORM_HEADERS, method="GET")
     out.parent.mkdir(parents=True, exist_ok=True)
     with request.urlopen(req, timeout=DEFAULT_PLATFORM_TIMEOUT) as response:
         out.write_bytes(response.read())
